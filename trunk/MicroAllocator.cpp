@@ -501,7 +501,7 @@ public:
         assert(index>=0 && index < 6 );
         ret = &mAlloc[index].mChunks.mChunks[0];
     }
-	else
+	else if ( mMicroChunkCount )
 	{
         if ( mLastMicroChunk && mLastMicroChunk->inside(s) )
         {
@@ -600,7 +600,9 @@ public:
             break;
         }
     }
+#ifdef _DEBUG
     assert(removed);
+#endif
   }
 
 private:
@@ -742,8 +744,8 @@ void          releaseHeapManager(HeapManager *heap)
 }
 
 
-#define TEST_SIZE 63
-#define TEST_ALLOC_COUNT 512
+#define TEST_SIZE 255
+#define TEST_ALLOC_COUNT 8192
 #define TEST_RUN 10000000
 
 #ifdef WIN32
