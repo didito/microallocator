@@ -187,7 +187,7 @@ public:
     if ( mData == 0 )
     {
         mMyHeap = true;
-        mData = (NxU8 *)heap->malloc( chunkSize * maxChunks );
+        mData = (NxU8 *)heap->micro_malloc( chunkSize * maxChunks );
         init(mData,chunkSize,maxChunks);
         update->addMicroChunk(mData,mDataEnd,this);
     }
@@ -214,7 +214,7 @@ public:
     if ( mUsedCount == 0 && mMyHeap  ) // free the heap back to the application if we are done with this.
     {
         update->removeMicroChunk(this);
-        heap->free(mData);
+        heap->micro_free(mData);
         mMyHeap = false;
         mData   = 0;
         mDataEnd = 0;
@@ -223,6 +223,11 @@ public:
   }
 
   NxU32 getChunkSize(void) const { return mChunkSize; };
+
+  bool isInside(const NxU8 *p) const
+  {
+	  return p>=mData && p < mDataEnd; 
+  }
 
 private:
   bool          mMyHeap;
@@ -272,7 +277,7 @@ public:
 
     if ( !ret )
     {
-        MemoryChunkChunk *mcc = (MemoryChunkChunk *)mHeap->malloc( sizeof(MemoryChunkChunk) );
+        MemoryChunkChunk *mcc = (MemoryChunkChunk *)mHeap->micro_malloc( sizeof(MemoryChunkChunk) );
         new ( mcc ) MemoryChunkChunk;
         MemoryChunkChunk *onext = mNext;
         mNext = mcc;
@@ -301,7 +306,7 @@ public:
   MemoryChunk       mChunks[DEFAULT_CHUNKS];
 };
 
-class FixedMemory : public MemMutex
+class FixedMemory
 {
 public:
   FixedMemory(void)
@@ -311,13 +316,11 @@ public:
 
   void * allocate(MicroChunkUpdate *update)
   {
-    Lock();
     void *ret = mCurrent->allocate(mChunks.mHeap,mChunks.mChunkSize,mChunks.mMaxChunks,update);
     if ( ret == 0 )
     {
         ret = mChunks.allocate(mCurrent,update);
     }
-    Unlock();
 	return ret;
   }
 
@@ -358,7 +361,7 @@ public:
   NxU8        *mPad; // padding to make it 16 byte aligned.
 };
 
-class MyMicroAllocator : public MicroAllocator, public MicroChunkUpdate
+class MyMicroAllocator : public MicroAllocator, public MicroChunkUpdate, public MemMutex
 {
 public:
   MyMicroAllocator(MicroHeap *heap,void *baseMem,NxU32 initialSize,NxU32 chunkSize)
@@ -435,25 +438,34 @@ public:
   {
     if ( mMicroChunks )
     {
-        mHeap->free(mMicroChunks);
+        mHeap->micro_free(mMicroChunks);
     }
+  }
+
+  virtual NxU32           getChunkSize(MemoryChunk *chunk) 
+  {
+	  return chunk ? chunk->getChunkSize() : 0;
   }
 
   // we have to steal one byte out of every allocation to record the size, so we can efficiently de-allocate it later.
   virtual void * malloc(size_t size)
   {
     void *ret = 0;
+	Lock();
    assert( size <= 256 );
    if ( size <= 256 )
    {
      ret = mFixedAllocators[size]->allocate(this);
    }
+   Unlock();
     return ret;
   }
 
   virtual void   free(void *p,MemoryChunk *chunk)
   {
+    Lock();
     chunk->deallocate(p,mHeap,this);
+	Unlock();
   }
 
   // perform a binary search on the sorted list of chunks.
@@ -486,12 +498,15 @@ public:
 			  }
 		  }
 	  }
+
 	  return ret;
   }
 
   virtual MemoryChunk *   isMicroAlloc(const void *p)  // returns true if this pointer is handled by the micro-allocator.
   {
     MemoryChunk *ret = 0;
+
+	Lock();
 
     const NxU8 *s = (const NxU8 *)p;
 
@@ -500,6 +515,7 @@ public:
         NxU32 index = (NxU32)(s-mChunkStart)/mChunkSize;
         assert(index>=0 && index < 6 );
         ret = &mAlloc[index].mChunks.mChunks[0];
+		assert( ret->isInside(s) );
     }
 	else if ( mMicroChunkCount )
 	{
@@ -512,6 +528,19 @@ public:
 			if ( mMicroChunkCount >= 4 )
 			{
 				ret = binarySearchMicroChunks(s);
+#ifdef _DEBUG
+				if (ret )
+				{
+					assert( ret->isInside(s) );
+				}
+				else 
+				{
+					for (NxU32 i=0; i<mMicroChunkCount; i++)
+					{
+						assert( !mMicroChunks[i].inside(s) );
+					}
+				}
+#endif
 			}
 			else
 			{
@@ -520,6 +549,7 @@ public:
 					if ( mMicroChunks[i].inside(s) )
 					{
 						ret = mMicroChunks[i].mChunk;
+						assert( ret->isInside(s) );
 						mLastMicroChunk = &mMicroChunks[i];
 						break;
 					}
@@ -527,7 +557,11 @@ public:
 			}
         }
 	}
-
+#ifdef _DEBUG
+	if ( ret )
+		assert( ret->isInside(s) );
+#endif
+	Unlock();
     return ret;
   }
 
@@ -538,12 +572,12 @@ public:
     if ( mMaxMicroChunks == 0 )
     {
         mMaxMicroChunks = 64; // initial reserve.
-        mMicroChunks = (MicroChunk *)mHeap->malloc( sizeof(MicroChunk)*mMaxMicroChunks );
+        mMicroChunks = (MicroChunk *)mHeap->micro_malloc( sizeof(MicroChunk)*mMaxMicroChunks );
     }
     else
     {
         mMaxMicroChunks*=2;
-        mMicroChunks = (MicroChunk *)mHeap->realloc( mMicroChunks, sizeof(MicroChunk)*mMaxMicroChunks);
+        mMicroChunks = (MicroChunk *)mHeap->micro_realloc( mMicroChunks, sizeof(MicroChunk)*mMaxMicroChunks);
     }
   }
 
@@ -605,6 +639,68 @@ public:
 #endif
   }
 
+  inline void * inline_malloc(size_t size)
+  {
+     Lock();
+     void *ret = mFixedAllocators[size]->allocate(this);
+	 Unlock();
+	 return ret;
+  }
+
+  inline void            inline_free(void *p,MemoryChunk *chunk) // free relative to previously located MemoryChunk
+  {
+	Lock();
+    chunk->deallocate(p,mHeap,this);
+	Unlock();
+  }
+
+  inline MemoryChunk *   inline_isMicroAlloc(const void *p) // returns pointer to the chunk this memory belongs to, or null if not a micro-allocated block.
+  {
+    MemoryChunk *ret = 0;
+
+	Lock();
+
+    const NxU8 *s = (const NxU8 *)p;
+
+    if ( s >= mChunkStart && s < mChunkEnd )
+    {
+        NxU32 index = (NxU32)(s-mChunkStart)/mChunkSize;
+        assert(index>=0 && index < 6 );
+        ret = &mAlloc[index].mChunks.mChunks[0];
+    }
+	else if ( mMicroChunkCount )
+	{
+        if ( mLastMicroChunk && mLastMicroChunk->inside(s) )
+        {
+            ret = mLastMicroChunk->mChunk;
+        }
+        else
+        {
+			if ( mMicroChunkCount >= 4 )
+			{
+				ret = binarySearchMicroChunks(s);
+			}
+			else
+			{
+				for (NxU32 i=0; i<mMicroChunkCount; i++)
+				{
+					if ( mMicroChunks[i].inside(s) )
+					{
+						ret = mMicroChunks[i].mChunk;
+						mLastMicroChunk = &mMicroChunks[i];
+						break;
+					}
+				}
+			}
+        }
+	}
+
+	Unlock();
+
+    return ret;
+  }
+
+
 private:
   MicroHeap   *mHeap;
   NxU8        *mBaseMem;
@@ -626,7 +722,7 @@ private:
 MicroAllocator *createMicroAllocator(MicroHeap *heap,NxU32 chunkSize)
 {
     NxU32 initialSize = chunkSize*6+sizeof(MyMicroAllocator)+32;
-    void *baseMem = heap->malloc(initialSize);
+    void *baseMem = heap->micro_malloc(initialSize);
     MyMicroAllocator *mc = (MyMicroAllocator *)baseMem;
     new ( mc ) MyMicroAllocator(heap,baseMem,initialSize,chunkSize);
     return static_cast< MicroAllocator *>(mc);
@@ -637,7 +733,7 @@ void releaseMicroAllocator(MicroAllocator *m)
     MyMicroAllocator *mc = static_cast< MyMicroAllocator *>(m);
 	MicroHeap *mh = mc->getMicroHeap();
     mc->~MyMicroAllocator();
-	mh->free(mc);
+	mh->micro_free(mc);
 }
 
 class MyHeapManager : public MicroHeap, public HeapManager
@@ -654,17 +750,17 @@ public:
   }
 
   // heap allocations used by the micro allocator.
-  virtual void * malloc(size_t size)
+  virtual void * micro_malloc(size_t size)
   {
     return ::malloc(size);
   }
 
-  virtual void   free(void *p)
+  virtual void   micro_free(void *p)
   {
     return ::free(p);
   }
 
-  virtual void * realloc(void *oldMem,size_t newSize)
+  virtual void * micro_realloc(void *oldMem,size_t newSize)
   {
     return ::realloc(oldMem,newSize);
   }
@@ -673,7 +769,7 @@ public:
   {
     void *ret;
 
-    if ( size <= 256 ) // micro allocator only handles allocations between 0 and 256 bytes in length. 
+    if ( size <= 256 ) // micro allocator only handles allocations between 0 and 256 bytes in length.
     {
         ret = mMicro->malloc(size);
     }
@@ -724,6 +820,24 @@ public:
     return ret;
   }
 
+  inline void * inline_heap_malloc(size_t size)
+  {
+    return size<=256 ? ((MyMicroAllocator *)mMicro)->inline_malloc(size) : ::malloc(size);
+  }
+
+  inline void   inline_heap_free(void *p)
+  {
+	  MemoryChunk *chunk = ((MyMicroAllocator *)mMicro)->inline_isMicroAlloc(p);
+	  if ( chunk )
+	  {
+		  ((MyMicroAllocator *)mMicro)->inline_free(p,chunk);
+	  }
+	  else
+	  {
+		  ::free(p);
+	  }
+
+  }
 
 private:
   MicroAllocator *mMicro;
@@ -744,9 +858,10 @@ void          releaseHeapManager(HeapManager *heap)
 }
 
 
-#define TEST_SIZE 255
+#define TEST_SIZE 63
 #define TEST_ALLOC_COUNT 8192
-#define TEST_RUN 10000000
+#define TEST_RUN 40000000
+#define TEST_INLINE 1
 
 #ifdef WIN32
 #include <windows.h>
@@ -782,13 +897,22 @@ void performUnitTests(void)
           NxU32 index = rand()&(TEST_ALLOC_COUNT-1);
           if ( allocs[index] )
           {
+#if TEST_INLINE
+              heap_free(hm, allocs[index] );
+#else
               hm->heap_free( allocs[index] );
+#endif
               allocs[index] = 0;
           }
           else
           {
               NxU32 asize = (rand()&TEST_SIZE);
+			  if ( (rand()&127)==0) asize+=256; // one out of every 15 allocs is larger than 256 bytes.
+#if TEST_INLINE
+              allocs[index] = heap_malloc(hm,asize);
+#else
               allocs[index] = hm->heap_malloc(asize);
+#endif
           }
       }
 
@@ -796,7 +920,11 @@ void performUnitTests(void)
       {
           if ( allocs[i] )
           {
+#if TEST_INLINE
+              heap_free(hm,allocs[i] );
+#else
               hm->heap_free(allocs[i] );
+#endif
 			  allocs[i] = 0;
           }
       }
@@ -823,6 +951,7 @@ void performUnitTests(void)
           else
           {
               NxU32 asize = (rand()&TEST_SIZE);
+			  if ( (rand()&127)==0) asize+=256; // one out of every 15 allocs is larger than 256 bytes.
               allocs[index] = ::malloc(asize);
           }
       }
@@ -842,6 +971,21 @@ void performUnitTests(void)
     }
 
     releaseHeapManager(hm);
+}
+
+void * heap_malloc(HeapManager *hm,size_t size)
+{
+    return ((MyHeapManager *)hm)->inline_heap_malloc(size);
+}
+
+void   heap_free(HeapManager *hm,void *p)
+{
+    ((MyHeapManager *)hm)->inline_heap_free(p);
+}
+
+void * heap_realloc(HeapManager *hm,void *oldMem,size_t newSize)
+{
+    return hm->heap_realloc(oldMem,newSize);
 }
 
 }; // end of namespace
