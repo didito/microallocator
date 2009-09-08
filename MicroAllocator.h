@@ -2,7 +2,6 @@
 
 #define MICRO_ALLOCATOR_H
 
-
 /*!
 **
 ** Copyright (c) 2009 by John W. Ratcliff mailto:jratcliffscarab@gmail.com
@@ -160,9 +159,9 @@ namespace MICRO_ALLOCATOR
 class MicroHeap
 {
 public:
-  virtual void * malloc(size_t size) = 0;
-  virtual void   free(void *p) = 0;
-  virtual void * realloc(void *oldMen,size_t newSize) = 0;
+  virtual void * micro_malloc(size_t size) = 0;
+  virtual void   micro_free(void *p) = 0;
+  virtual void * micro_realloc(void *oldMen,size_t newSize) = 0;
 };
 
 class MemoryChunk;
@@ -173,6 +172,7 @@ public:
   virtual void *          malloc(size_t size) = 0;
   virtual void            free(void *p,MemoryChunk *chunk) = 0; // free relative to previously located MemoryChunk
   virtual MemoryChunk *   isMicroAlloc(const void *p) = 0; // returns pointer to the chunk this memory belongs to, or null if not a micro-allocated block.
+  virtual NxU32           getChunkSize(MemoryChunk *chunk) = 0;
 };
 
 MicroAllocator *createMicroAllocator(MicroHeap *heap,NxU32 chunkSize=32768); // initial chunk size 32k per block.
@@ -191,7 +191,14 @@ public:
 HeapManager * createHeapManager(NxU32 defaultChunkSize=32768);
 void          releaseHeapManager(HeapManager *heap);
 
+// about 10% faster than using the virtual interface, inlines the functions as much as possible.
+void * heap_malloc(HeapManager *hm,size_t size);
+void   heap_free(HeapManager *hm,void *p);
+void * heap_realloc(HeapManager *hm,void *oldMem,size_t newSize);
+
 void performUnitTests(void);
+
+//
 
 }; // end of namespace
 
